@@ -1,0 +1,187 @@
+curl https://omnitruck.chef.io/install.sh | sudo bash -s -- -v 5.22.29 -P inspec && inspec shell -t ssh://root@prod-i4a6zqrl -i ~/.ssh/id_rsa --chef-license accept
+
+cat > ubuntu/controls/example.rb <<EOL
+control 'ubuntu-5.2.1' do
+   title 'Ensure permissions on /etc/ssh/sshd_config are configured'
+   desc 'The /etc/ssh/sshd_configfile contains configuration specifications for sshd. The command below checks whether the owner and group of the file is root.'
+   describe file('/etc/ssh/sshd_config') do
+     its('owner') { should eq 'root'}
+     its('group') { should eq 'root'}
+     its('mode') { should cmp '0600' }
+   end
+end
+EOL
+
+cat >> ubuntu/controls/configure_sudo.rb <<EOL
+control 'ubuntu-1.3.1' do
+   title 'Ensure sudo is installed'
+   desc 'sudo allows a permitted user to execute a command as the superuser or another user, as specified by the security policy.'
+   describe package('sudo') do
+      it { should be_installed }
+   end
+end
+
+control 'ubuntu-1.3.2' do
+   title 'Ensure sudo commands use pty'
+   desc 'Attackers can run a malicious program using sudo, which would again fork a background process that remains even when the main program has finished executing.'
+   describe command('grep -Ei "^\s*Defaults\s+([^#]+,\s*)?use_pty(,\s+\S+\s*)*(\s+#.*)?$" /etc/sudoers').stdout do
+      it { should include 'Defaults use_pty' }
+   end
+end
+
+control 'ubuntu-1.3.3' do
+   title 'Ensure sudo log file exists'
+   desc 'Attackers can run a malicious program using sudo, which would again fork a background process that remains even when the main program has finished executing.'
+   describe command('grep -Ei "^\s*Defaults\s+logfile=\S+" /etc/sudoers').stdout do
+      it { should include 'Defaults logfile=' }
+   end
+end
+EOL
+
+inspec exec ubuntu
+
+echo "StrictHostKeyChecking accept-new" >> ~/.ssh/config
+inspec exec ubuntu -t ssh://root@prod-i4a6zqrl -i ~/.ssh/id_rsa --chef-license accept
+
+inspec init profile asvs --chef-license accept
+cat > asvs/controls/example.rb <<EOL
+control 'ASVS-14.4.1' do
+    impact 0.7
+    title 'Safe character set'
+    desc 'HTTP response contains content type header with safe character set'
+    describe http('https://prod-i4a6zqrl.lab.practical-devsecops.training') do
+        its ('headers.Content-type') { should cmp 'text/html; charset=utf-8'}
+    end
+end
+
+control 'ASVS-14.4.2' do
+    impact 0.7
+    title 'Contain Content Disposition header attachment'
+    desc "Add Content-Disposition header to the server's configuration, Add 'attachment' directive to the header."
+    describe http('https://prod-i4a6zqrl.lab.practical-devsecops.training') do
+        its ('headers.content-disposition') { should cmp 'attachment' }
+    end
+end
+
+control 'ASVS-14.4.3' do
+    impact 0.7
+    title 'Content Security Policy Options != none / contain unsafe-inline;unsafe-eval;\* '
+    desc "Ensure that CSP is not configured with the directives: 'unsafe-inline', 'unsafe-eval' and wildcards."
+    describe http('https://prod-i4a6zqrl.lab.practical-devsecops.training') do
+        its ('headers.content-security-policy') { should_not cmp 'none' }
+        its ('headers.content-security-policy') { should_not include 'unsafe-inline;unsafe-eval;\*'}
+    end
+end
+
+control 'ASVS-14.4.4' do
+    impact 0.7
+    title 'Content type Options = no sniff'
+    desc 'All responses should contain X-Content-Type-Options=nosniff'
+    describe http('https://prod-i4a6zqrl.lab.practical-devsecops.training') do
+        its ('headers.x-content-type-options') { should cmp 'nosniff'}
+    end
+end
+
+control 'ASVS-14.4.5' do
+    impact 0.7
+    title 'HSTS is using directives max-age=15724800'
+    desc 'Verify that HTTP Strict Transport Security headers are included on all responses and for all subdomains, such as Strict-Transport-Security: max-age=15724800; includeSubDomains.'
+    describe http('https://prod-i4a6zqrl.lab.practical-devsecops.training') do
+        its ('headers.Strict-Transport-Security') { should match /\d/ }
+    end
+end
+
+control 'ASVS-14.4.6' do
+    impact 0.7
+    title "'Referrer-Policy' header is included"
+    desc "HTTP requests may include Referrer header, which may expose sensitive information. Referrer-Policy restiricts how much information is sent in the Referer header."
+    describe http('https://prod-i4a6zqrl.lab.practical-devsecops.training') do
+        its ('headers.referrer-policy') { should cmp 'no-referrer; same-origin' }
+    end
+end
+EOL
+inspec exec asvs
+
+inspec exec https://github.com/dev-sec/cis-docker-benchmark.git --chef-license accept
+
+cat > inventory.ini <<EOL
+
+# DevSecOps Studio Inventory
+[devsecops]
+devsecops-box-i4a6zqrl
+
+[prod]
+prod-i4a6zqrl
+
+EOL
+
+ansible -i inventory.ini prod -m shell -a "uptime"
+ansible-playbook -i /hardening/inventory.ini /hardening/ansible-hardening.yml
+
+
+ansible-hardening:
+  stage: prod
+  image: willhallonline/ansible:2.9-ubuntu-18.04
+  before_script:
+    - mkdir -p ~/.ssh
+    - echo "$DEPLOYMENT_SERVER_SSH_PRIVKEY" | tr -d '\r' > ~/.ssh/id_rsa
+    - chmod 600 ~/.ssh/id_rsa
+    - eval "$(ssh-agent -s)"
+    - ssh-add ~/.ssh/id_rsa
+    - ssh-keyscan -t rsa $DEPLOYMENT_SERVER >> ~/.ssh/known_hosts
+  script:
+    - echo -e "[prod]\n$DEPLOYMENT_SERVER" >> inventory.ini
+    - ansible-galaxy install dev-sec.os-hardening
+    - ansible-playbook -i inventory.ini ansible-hardening.yml
+
+echo "pdso-training" | docker login --username root --password-stdin registry-i4a6zqrl.lab.practical-devsecops.training
+
+ansible-playbook -i inventory.ini -e "docker_username=root docker_password=pdso-training" main.yml
+
+cat > main.yml <<EOL
+---
+- name: Deploying container
+  hosts: prod
+  remote_user: root
+  gather_facts: no
+
+  tasks:
+  - name: Ensure docker is installed
+    stat:
+      path: "/usr/bin/docker"
+    register: docker_result
+
+  - debug:
+      msg: "Please install the docker"
+    when: not docker_result.stat.exists
+
+  - name: Install python3-docker for Docker SDK
+    pip:
+      name: docker
+      executable: pip3
+
+  - name: Log into DockerHub
+    docker_login:
+      registry_url: "registry-i4a6zqrl.lab.practical-devsecops.training"
+      username: "{{ docker_username }}"
+      password: "{{ docker_password }}"
+
+  - name: Pulling new image
+    docker_image:
+      name: "registry-i4a6zqrl.lab.practical-devsecops.training/django.nv:1.0"
+      source: pull
+
+  - name: Remove django.nv container
+    docker_container:
+      name: "django.nv"
+      state: absent
+      force_kill: yes
+
+  - name: Running new container
+    docker_container:
+      name: "django.nv"
+      image: "registry-i4a6zqrl.lab.practical-devsecops.training/django.nv:1.0"
+      detach: yes
+      ports:
+        - 8000:8000
+EOL
