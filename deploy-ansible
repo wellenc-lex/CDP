@@ -104,6 +104,8 @@ inspec exec asvs
 
 inspec exec https://github.com/dev-sec/cis-docker-benchmark.git --chef-license accept
 
+
+pip3 install ansible==8.7.0
 cat > inventory.ini <<EOL
 
 # DevSecOps Studio Inventory
@@ -115,7 +117,18 @@ prod-i4a6zqrl
 
 EOL
 
+ansible -i inventory.ini prod --list-hosts
 ansible -i inventory.ini prod -m shell -a "uptime"
+
+cat > /etc/ansible/ansible.cfg <<EOF
+[defaults]
+stdout_callback = yaml
+deprecation_warnings = False
+host_key_checking = False
+retry_files_enabled = False
+inventory = /inventory.ini
+EOF
+
 ansible-playbook -i /hardening/inventory.ini /hardening/ansible-hardening.yml
 
 
@@ -185,3 +198,5 @@ cat > main.yml <<EOL
       ports:
         - 8000:8000
 EOL
+
+wget -O /usr/local/bin/tfsec https://github.com/aquasecurity/tfsec/releases/download/v0.55.0/tfsec-linux-amd64 && chmod +x && tfsec aws -f json | tee tfsec-output.json
