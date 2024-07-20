@@ -12,6 +12,15 @@ control 'ubuntu-5.2.1' do
 end
 EOL
 
+cat > ubuntu/controls/example.rb <<EOL
+describe file('/etc/shadow') do
+    it { should exist }
+    it { should be_file }
+    it { should be_owned_by 'root' }
+  end
+EOL
+
+CIS ->
 cat >> ubuntu/controls/configure_sudo.rb <<EOL
 control 'ubuntu-1.3.1' do
    title 'Ensure sudo is installed'
@@ -37,6 +46,7 @@ control 'ubuntu-1.3.3' do
    end
 end
 EOL
+
 
 inspec exec ubuntu
 
@@ -105,6 +115,10 @@ inspec exec asvs
 inspec exec https://github.com/dev-sec/cis-docker-benchmark.git --chef-license accept
 
 
+
+
+ansible 
+
 pip3 install ansible==8.7.0
 cat > inventory.ini <<EOL
 
@@ -117,8 +131,10 @@ prod-i4a6zqrl
 
 EOL
 
+
 ansible -i inventory.ini prod --list-hosts
 ansible -i inventory.ini prod -m shell -a "uptime"
+ansible -i inventory.ini all -m apt -a "name=ntp"
 
 cat > /etc/ansible/ansible.cfg <<EOF
 [defaults]
@@ -129,8 +145,16 @@ retry_files_enabled = False
 inventory = /inventory.ini
 EOF
 
-ansible-playbook -i /hardening/inventory.ini /hardening/ansible-hardening.yml
+/usr/bin/ansible-playbook --ssh-common-args="-o StrictHostKeyChecking=no" -i /hardening/inventory.ini /hardening/ansible-hardening.yml
 
+Add the following key/value pair in the form.
+
+Name  Value
+Key DEPLOYMENT_SERVER
+Value prod-5xje80p0
+Name  Value
+Key DEPLOYMENT_SERVER_SSH_PRIVKEY
+Value Copy the private key from the production machine using SSH. The SSH key is available at /root/.ssh/id_rsa. Please refer to Advanced Linux Exercises for a refresher on SSH Keys
 
 ansible-hardening:
   stage: prod
@@ -146,6 +170,25 @@ ansible-hardening:
     - echo -e "[prod]\n$DEPLOYMENT_SERVER" >> inventory.ini
     - ansible-galaxy install dev-sec.os-hardening
     - ansible-playbook -i inventory.ini ansible-hardening.yml
+
+
+
+Name  Value
+Key DEPLOYMENT_SERVER
+Value prod-5xje80p0
+
+Key DEPLOYMENT_SERVER_SSH_PRIVKEY
+Value Copy the private key from the production machine using SSH. The SSH key is available at /root/.ssh/id_rsa. Please refer to Advanced Linux Exercises for a refresher on SSH Keys
+
+---
+- name: Playbook to harden ubuntu OS.
+  hosts: prod
+  remote_user: root
+  become: yes
+
+  roles:
+    - dev-sec.os-hardening
+
 
 echo "pdso-training" | docker login --username root --password-stdin registry-i4a6zqrl.lab.practical-devsecops.training
 
@@ -200,3 +243,91 @@ cat > main.yml <<EOL
 EOL
 
 wget -O /usr/local/bin/tfsec https://github.com/aquasecurity/tfsec/releases/download/v0.55.0/tfsec-linux-amd64 && chmod +x && tfsec aws -f json | tee tfsec-output.json
+
+
+inspect status":"failed
+
+
+
+
+inspec init profile challenge --chef-license accept
+pci dss
+
+cat > /inspec-profile/challenge/controls/example.rb <<EOL
+describe file('/etc/pam.d/system-auth') do
+    its('content') { 
+        should match(/^\s*password\s+requisite\s+pam_pwquality\.so\s+(\S+\s+)*try_first_pass/)
+    }
+    its('content') {
+        should match(/^\s*password\s+requisite\s+pam_pwquality\.so\s+(\S+\s+)*retry=[3210]/)
+    }
+end
+
+describe file('/etc/pam.d/password-auth') do
+    its('content') { 
+        should match(/^\s*password\s+requisite\s+pam_pwquality\.so\s+(\S+\s+)*try_first_pass/)
+    }
+    its('content') {
+        should match(/^\s*password\s+requisite\s+pam_pwquality\.so\s+(\S+\s+)*retry=[3210]/)
+    }
+end
+
+describe file('/etc/default/useradd') do
+    its('content') {
+        should match(/^\s*INACTIVE\s*=\s*(30|[1-2][0-9]|[1-9])\s*(\s+#.*)?$/)
+    }
+end
+
+describe file('/etc/ssh/sshd_config') do
+    it { should exist }
+    it { should be_file }
+    it { should be_owned_by 'root' }
+    its('content') { should match 'PasswordAuthentication no' }
+end
+EOL
+
+git clone git@gitlab-ce-5xje80p0:root/django-nv.git
+cd django-nv
+cp -r /inspec-profile/challenge challenge
+git add challenge
+git config --global user.email "you@example.com"
+git config --global user.name "Your Name"
+git commit -m "Add custom inspec profile"
+git push origin main
+
+
+image: docker:20.10
+
+services:
+  - docker:dind
+
+stages:
+  - test
+
+compliance:
+  stage: test
+  script:
+    - docker run -i --rm -v $(pwd):/share chef/inspec check challenge --chef-license accept
+    - docker run -i --rm -v $(pwd):/share chef/inspec exec challenge --chef-license accept
+  allow_failure: true
+
+  cat >.gitlab-ci.yml<<EOF
+image: docker:20.10
+
+services:
+  - docker:dind
+
+stages:
+  - test
+
+compliance:
+  stage: test
+  script:
+    - docker run -i --rm -v $(pwd):/share chef/inspec check challenge --chef-license accept
+    - docker run -i --rm -v $(pwd):/share chef/inspec exec challenge --chef-license accept
+  allow_failure: true
+EOF
+
+git add .gitlab-ci.yml
+git commit -m "Update .gitlab-ci.yml"
+git push origin main

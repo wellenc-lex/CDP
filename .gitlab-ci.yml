@@ -32,7 +32,18 @@ test:
    - pip install -r requirements.txt
    - python manage.py test taskManager
 
-# Software Component Analysis
+#OAST
+oast:
+  stage: test
+  script: #dont need to pip install safety because its already python project
+       - safety check -r requirements.txt --json > oast-results.json
+  artifacts:
+    paths: [oast-results.json]
+    when: always
+    expire_in: one week
+  allow_failure: true
+
+#SCA
 sca-frontend:
   stage: build
   image: node:alpine3.10
@@ -46,6 +57,7 @@ sca-frontend:
     expire_in: one week
   allow_failure: true #<--- allow the build to fail but don't mark it as such
 
+#SCA
 sca-backend:
   stage: build
   script:
@@ -53,14 +65,15 @@ sca-backend:
     - docker run --rm -v $(pwd):/src hysnsec/safety check -r requirements.txt --json > oast-results.json
   artifacts:
     paths: [oast-results.json]
-    when: always 
+    when: always
+    expire_in: one week
   allow_failure: true #<--- allow the build to fail but don't mark it as such
 
+#SAST
 trufflehog-dojo:
   stage: build
   before_script:
     - apk add py-pip py-requests curl
-    - curl https://gitlab.practical-devsecops.training/-/snippets/3/raw -o upload-results.py
   script:
     - docker pull hysnsec/trufflehog  # Download container
     - docker run -v $(pwd):/src --rm hysnsec/trufflehog filesystem --directory=/src --json | tee trufflehog-output.json
@@ -69,14 +82,14 @@ trufflehog-dojo:
   artifacts:
     paths: [trufflehog-output.json]
     when: always
+    expire_in: one week
   allow_failure: true
 
-# Static Application Security Testing
+#SAST
 bandit-dojo:
   stage: build
   before_script:
     - apk add py-pip py-requests curl
-    - curl https://gitlab.practical-devsecops.training/-/snippets/3/raw -o upload-results.py
   script:
     - docker pull hysnsec/bandit  # Download bandit docker container
     - docker run --user $(id -u):$(id -g) -v $(pwd):/src --rm hysnsec/bandit -r /src -f json -o /src/bandit-output.json
@@ -85,38 +98,42 @@ bandit-dojo:
   artifacts:
     paths: [bandit-output.json]
     when: always
+    expire_in: one week
   allow_failure: true #<--- allow the build to fail but don't mark it as such
 
 
-# Dynamic Application Security Testing
+#DAST
 nikto:
   stage: integration
   script:
     - docker pull hysnsec/nikto
-    - docker run --rm -v $(pwd):/tmp hysnsec/nikto -h prod-5xje80p0 -o /tmp/nikto-output.xml
+    - docker run --rm -v $(pwd):/tmp hysnsec/nikto -h $DEPLOYMENT_SERVER -o /tmp/nikto-output.xml
   artifacts:
     paths: [nikto-output.xml]
     when: always
+    expire_in: one week
   allow_failure: true #<--- allow the build to fail but don't mark it as such
 
 sslscan:
   stage: integration
   script:
     - docker pull hysnsec/sslyze
-    - docker run --rm -v $(pwd):/tmp hysnsec/sslyze prod-5xje80p0.lab.practical-devsecops.training:443 --json_out /tmp/sslyze-output.json
+    - docker run --rm -v $(pwd):/tmp hysnsec/sslyze $DEPLOYMENT_SERVER.lab.practical-devsecops.training:443 --json_out /tmp/sslyze-output.json
   artifacts:
     paths: [sslyze-output.json]
     when: always
+    expire_in: one week
   allow_failure: true #<--- allow the build to fail but don't mark it as such
 
 nmap:
   stage: integration
   script:
     - docker pull hysnsec/nmap
-    - docker run --rm -v $(pwd):/tmp hysnsec/nmap prod-5xje80p0 -oX /tmp/nmap-output.xml
+    - docker run --rm -v $(pwd):/tmp hysnsec/nmap $DEPLOYMENT_SERVER -oX /tmp/nmap-output.xml
   artifacts:
     paths: [nmap-output.xml]
     when: always
+    expire_in: one week
   allow_failure: true #<--- allow the build to fail but don't mark it as such
 
 dast-zap:
@@ -125,7 +142,7 @@ dast-zap:
     - apk add py-pip py-requests
     - docker pull softwaresecurityproject/zap-stable:2.13.0
   script:
-    - docker run --user $(id -u):$(id -g) -w /zap -v $(pwd):/zap/wrk:rw --rm softwaresecurityproject/zap-stable:2.13.0 zap-baseline.py -t https://prod-5xje80p0.lab.practical-devsecops.training -d -x zap-output.xml
+    - docker run --user $(id -u):$(id -g) -w /zap -v $(pwd):/zap/wrk:rw --rm softwaresecurityproject/zap-stable:2.13.0 zap-baseline.py -t https://$DEPLOYMENT_SERVER.lab.practical-devsecops.training -d -x zap-output.xml
   after_script:
     - python3 upload-results.py --host $DOJO_HOST --api_key $DOJO_API_TOKEN --engagement_id 1 --product_id 1 --lead_id 1 --environment "Production" --result_file zap-output.xml --scanner "ZAP Scan"
   artifacts:
@@ -134,10 +151,11 @@ dast-zap:
     expire_in: 1 day
   allow_failure: true #<--- allow the build to fail but don't mark it as such
 
-# Infrastructure as Code
 # PLEASE ENSURE YOU HAVE SETUP THE ENVIRONMENT VARIABLES AND NEEDED FILES APPROPRIATELY
-ansible-hardening:
-  stage: prod
+os-hardening:
+  stage: deploy
+  only:
+    - "main"
   image: willhallonline/ansible:2.9-ubuntu-18.04
   before_script:
     - mkdir -p ~/.ssh
@@ -150,9 +168,8 @@ ansible-hardening:
     - echo -e "[prod]\n$DEPLOYMENT_SERVER" >> inventory.ini
     - ansible-galaxy install dev-sec.os-hardening
     - ansible-playbook -i inventory.ini ansible-hardening.yml
-  allow_failure: true #<--- allow the build to fail but don't mark it as such
+  allow_failure: true #<--- allow the build to fail
 
-# Compliance as Code
 # PLEASE ENSURE YOU HAVE SETUP THE ENVIRONMENT VARIABLES AND NEEDED FILES APPROPRIATELY
 inspec:
   stage: prod
@@ -167,9 +184,8 @@ inspec:
     - ssh-add ~/.ssh/id_rsa
     - ssh-keyscan -t rsa $DEPLOYMENT_SERVER >> ~/.ssh/known_hosts
   script:
-    - docker run --rm -v ~/.ssh:/root/.ssh -v $(pwd):/share hysnsec/inspec exec https://github.com/dev-sec/linux-baseline.git -t ssh://root@$DEPLOYMENT_SERVER -i ~/.ssh/id_rsa --chef-license accept --reporter json:inspec-output.json
+    - docker run --rm -v ~/.ssh:/root/.ssh -v $(pwd):/share hysnsec/inspec exec https://github.com/dev-sec/nginx-baseline.git -t ssh://root@$DEPLOYMENT_SERVER -i ~/.ssh/id_rsa --chef-license accept --reporter json:inspec-output.json
   artifacts:
     paths: [inspec-output.json]
     when: always
-  allow_failure: true #<--- allow the build to fail but don't mark it as such
-
+    expire_in: one week
